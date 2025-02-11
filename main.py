@@ -13,6 +13,41 @@ from selenium.webdriver.support import expected_conditions as EC
 CHROME_DRIVER_PATH = "C:/resource/chromedriver-win64/chromedriver-win64/chromedriver.exe"
 
 
+def get_stock_codes():
+    """네이버 금융에서 주식 코드 목록 크롤링"""
+    url = "https://finance.naver.com/sise/sise_market_sum.nhn?sosok=0"  # KOSPI 기준
+    options = Options()
+    options.add_argument("--headless")  # 브라우저 창 안 띄움
+    driver = webdriver.Chrome(service=Service(CHROME_DRIVER_PATH), options=options)
+
+    driver.get(url)
+    time.sleep(2)
+
+    stock_data = []
+
+    try:
+        rows = driver.find_elements(By.CSS_SELECTOR, "#contentarea table.type_2 tbody tr")
+        for row in rows:
+            try:
+                name = row.find_element(By.CSS_SELECTOR, "td:nth-child(2) a").text  # 종목명
+                code = row.find_element(By.CSS_SELECTOR, "td:nth-child(2) a").get_attribute("href").split("=")[
+                    -1]  # 종목 코드
+                stock_data.append({"종목명": name, "종목코드": code})
+            except:
+                continue  # 공백 row 제외
+
+    except Exception as e:
+        print(f"❌ 주식 코드 크롤링 오류: {e}")
+
+    driver.quit()
+
+    df = pd.DataFrame(stock_data)
+    df.to_csv("stock_codes.csv", index=False, encoding="utf-8-sig")
+    print("✅ 주식 코드 리스트 저장 완료: stock_codes.csv")
+
+
+
+
 class StockExchangeScraper:
     def __init__(self):
         """WebDriver 설정 및 실행"""
@@ -23,10 +58,10 @@ class StockExchangeScraper:
 
         self.driver = webdriver.Chrome(service=Service(CHROME_DRIVER_PATH), options=options)
         self.wait = WebDriverWait(self.driver, 10)  # 최대 10초 대기
-        self.stock_data = {}
+        self.stock_data_list = []  # 여러 개의 주식 데이터를 저장할 리스트
         self.exchange_data = {}
 
-    def get_stock_data(self, stock_code="005930"):
+    def get_stock_data(self, stock_code):
         """네이버 금융에서 특정 종목 주식 데이터 크롤링"""
         stock_url = f"https://finance.naver.com/item/main.nhn?code={stock_code}"
         self.driver.get(stock_url)
@@ -38,6 +73,12 @@ class StockExchangeScraper:
                 EC.presence_of_element_located((By.CSS_SELECTOR, ".wrap_company h2 a"))
             ).text
             print(stock_name)
+
+            # ✅ 날짜 데이터 가져오기
+            date_element = self.wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".description .date"))
+            ).text.strip()
+            print(f"📅 기준 날짜: {date_element}")
 
             # ✅ 현재가 (여러 span 태그를 결합)
             price_elements = self.wait.until(
@@ -69,13 +110,16 @@ class StockExchangeScraper:
             volume = "".join([span.text for span in volume_elements])
             print(volume)
 
-            self.stock_data = {
+            stock_data = {
+                "기준 날짜": date_element,  # 날짜 추가
                 "종목명": stock_name,
                 "현재가": current_price,
-                "등락가/등락률": f"{change_number} / {change_percent}",
+                "등락가": change_number,
+                "등락률": change_percent,
                 "거래량": volume
             }
-            print(f"📊 주식 데이터 수집 완료: {self.stock_data}")
+            self.stock_data_list.append(stock_data)
+            print(f"📊 {stock_name} 데이터 수집 완료: {stock_data}")
 
         except Exception as e:
             print(f"❌ 주식 데이터 크롤링 오류: {e}")
@@ -127,10 +171,12 @@ class StockExchangeScraper:
 
     def save_to_csv(self, filename="stock_exchange_data.csv"):
         """크롤링한 데이터를 CSV 파일로 저장"""
-        if self.stock_data and self.exchange_data:
-            # ✅ 두 개의 데이터를 같은 행(Row)으로 합쳐서 저장
-            combined_data = {**self.stock_data, **self.exchange_data}
-            df = pd.DataFrame([combined_data])
+        if self.stock_data_list:
+            df = pd.DataFrame(self.stock_data_list)
+
+            # ✅ 환율 데이터 추가 (모든 주식 데이터 행에 동일하게 추가)
+            for key, value in self.exchange_data.items():
+                df[key] = value
 
             # ✅ 기존 CSV 파일 확인 후 이어서 저장 (Append 모드)
             if os.path.exists(filename):
@@ -155,9 +201,19 @@ class StockExchangeScraper:
 if __name__ == "__main__":
     scraper = StockExchangeScraper()
 
-    scraper.get_stock_data("005930")  # 삼성전자
+    # ✅ 사용자 입력으로 주식 코드 입력 받기
+    stock_codes = input("조사할 주식 코드를 ,(쉼표)로 구분하여 입력하세요 (예: 005930, 000660): ")
+    stock_code_list = stock_codes.replace(" ", "").split(",")
+
+    # ✅ 입력한 주식 코드별 데이터 수집
+    for stock_code in stock_code_list:
+        scraper.get_stock_data(stock_code)
+
+    # ✅ 환율 데이터 수집
     scraper.get_exchange_rate()
+
+    # ✅ CSV 저장
     scraper.save_to_csv()
 
-    # 브라우저 종료 X (직접 확인하고 싶으면 유지)
+    # # ✅ 브라우저 종료
     # scraper.close_browser()
